@@ -20,46 +20,93 @@ A minimal pi extension that intercepts `write` and `edit` tool calls for TypeScr
 4. The extension builds the resulting file content:
    - For `write`: uses `event.input.content` directly.
    - For `edit`: reads the existing file, applies each `oldText` → `newText` replacement sequentially (each `oldText` is replaced only once, using `String.replace`).
-5. The resulting content is **written to a temp file** in the same directory as the target, with a `~` prefix and `~` suffix (e.g. `src/foo.ts` → `src/~foo.ts~`). This keeps the real file untouched during linting.
-6. `npx tsc --noEmit --pretty false` is run **on the temp file only**.
-7. The `tsc` output is filtered to only include errors that mention the affected file path (using a word-boundary regex to avoid false positives).
-8. If there are errors: the change is **blocked** and the error output is returned to the agent.
-9. If compilation succeeds: the extension cleans up the temp file in a `finally` block (the actual `write`/`edit` tool will apply the change).
-10. If `tsc` times out or throws unexpectedly, the change is allowed to proceed as a fail-safe.
+5. The resulting content is **written to a temp file** in the same directory as the target, with a `~` prefix and a short hash infix (e.g. `src/foo.ts` → `src/~foo.a1b2c3d.ts`). This keeps the real file untouched during linting and avoids collisions when multiple agents lint the same file.
+6. A **temporary tsconfig** is created in the project root (e.g. `~tsconfig.a1b2c3d.json`) that extends the project's `tsconfig.json` but only includes the single temp file.
+7. `npx tsc --noEmit --pretty false -p <tempTsconfig>` is run using the temporary tsconfig. This preserves `moduleResolution`, `lib`, and other project settings that `--ignoreConfig` would lose.
+8. Because the tsconfig only includes the temp file, **every line of `tsc` output is a relevant compilation error** — no filtering is needed.
+9. If there are errors: the change is **blocked**, the error output is returned to the agent, and a UI notification (`❌ ${filePath}: ${errorCount} compilation error(s) — change blocked`) is shown.
+10. If compilation succeeds: the extension cleans up **both** the temp file and the temp tsconfig in a `finally` block (the actual `write`/`edit` tool will apply the change).
+11. If `tsc` times out or throws unexpectedly, the change is allowed to proceed as a fail-safe and a warning notification is shown.
 
 ## Implementation Notes
 
 The actual implementation diverges from the original sketch in several ways:
 
-- **Temp file with `~` prefix/suffix**: The candidate content is written to a temp file in the same directory as the target (e.g. `src/~foo.ts~`), so `tsc` won't match it in glob patterns. The real file is never modified during linting.
-- **Single-file `tsc`**: `tsc` is run on the temp file only, not the entire project. This is faster and more targeted — it checks the candidate content for syntax/type errors without needing to compile the full codebase.
+- **Temp file with `~` prefix and hash infix**: The candidate content is written to a temp file in the same directory as the target (e.g. `src/~foo.a1b2c3d.ts`). The `~` prefix and hash infix prevent glob matching and avoid collisions when multiple agents lint the same file. The trailing `~` is omitted because `tsc` rejects unsupported extensions (e.g. `.ts~`). The extension must remain exactly `.ts` or `.tsx`.
+- **Temporary tsconfig for `tsc`**: Instead of running `tsc` directly on the temp file, a temporary tsconfig is created in the project root that extends the project's `tsconfig.json` (preserving `moduleResolution`, `lib`, `target`, etc.) but only includes the single temp file. This is invoked via `tsc -p <tempTsconfig>`.
+- **No error filtering needed**: Because the temp tsconfig only includes the temp file, `tsc` produces only errors for that file. Every line of output is relevant — no regex filtering is required.
 - **Multiple edits**: For `edit` events, all `oldText`/`newText` pairs are applied sequentially using `String.replace()` (each `oldText` is replaced only once).
 - **`oldText` not found**: If `oldText` is missing from the file, the edit is silently skipped (via `continue`) but the lint check still proceeds on the existing content.
 - **Single-edit format**: In addition to the array format `{ edits: [...] }`, the extension also supports a single-edit format `{ oldText, newText }` as direct properties of `event.input`.
-- **File size limit**: Files exceeding 10 MB are skipped with an informational notification.
-- **Word-boundary error filtering**: `tsc` errors are filtered using a regex with word boundary (`\bfilename:`) to avoid false positives (e.g. matching `src/foo.ts.backup`).
+- **File size limit**: Files exceeding 10 MB are skipped with an informational notification (both for existing file size and for new content on `write` events).
+- **UI notifications**: When blocking, a UI notification shows the file path and error count (`❌ ${filePath}: ${errorCount} compilation error(s) — change blocked`).
+- **Cleanup of both temp files**: In the `finally` block, both the temp TS file and the temp tsconfig are cleaned up.
+- **Hash generation**: Temp file IDs are generated using `crypto.createHash("sha256")` with the basename + ISO date, styled like a short git commit hash (7 chars).
 
 ```typescript
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const TSC_TIMEOUT_MS = 30_000;
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+const GIT_SHORT_HASH_LEN = 7;
+
+/**
+ * Generate a short, git-like hash from a string.
+ * Returns the first `len` hex characters of the SHA-256 digest.
+ * e.g. "foo" → "a1b2c3d"
+ */
+function gitShortHash(input: string, len = GIT_SHORT_HASH_LEN): string {
+  return crypto
+    .createHash("sha256")
+    .update(input)
+    .digest("hex")
+    .slice(0, len);
+}
+
+/**
+ * Generate a unique ID for a temp lint file.
+ * Based on the file basename + current date, styled like a short git commit hash.
+ * e.g. "foo.ts" → "a1b2c3d"
+ */
+function lintTempId(basename: string): string {
+  const dateStr = new Date().toISOString().replace(/[T:.]/g, "-").split(".")[0];
+  return gitShortHash(`${basename}-${dateStr}`);
+}
 
 /**
  * Generate a temp file path for linting.
- * Uses ~ prefix and ~ suffix so tsc won't match it in glob patterns.
- * e.g. src/foo.ts → src/~foo.ts~
+ * Uses a ~ prefix with a short hash infix so tsc won't match it in glob
+ * patterns, and avoids collisions when multiple agents lint the same file.
+ * The trailing ~ is omitted because tsc rejects unsupported extensions
+ * (e.g. ".ts~"). The extension must remain exactly ".ts" or ".tsx".
+ * e.g. src/foo.ts → src/~foo.a1b2c3d.ts
  */
 function lintTempPath(filePath: string): string {
   const dir = path.dirname(filePath);
   const base = path.basename(filePath);
-  return path.join(dir, `~${base}~`);
+  const name = base.slice(0, base.lastIndexOf("."));
+  const ext = base.slice(base.lastIndexOf("."));
+  const id = lintTempId(base);
+  return path.join(dir, `~${name}.${id}${ext}`);
+}
+
+/**
+ * Generate a temporary tsconfig path for linting.
+ * Placed in the project root (cwd) so it can extend the main tsconfig.json.
+ * Uses the same hash as the temp TS file to link them, and ~ prefix so it
+ * won't be picked up by other tsconfig discovery patterns.
+ * e.g. project root → ~tsconfig.a1b2c3d.json
+ */
+function lintTempTsconfigPath(filePath: string): string {
+  const id = lintTempId(path.basename(filePath));
+  return path.join("~tsconfig.${id}.json");
 }
 
 function isTsFile(filePath: string): boolean {
@@ -67,37 +114,37 @@ function isTsFile(filePath: string): boolean {
   return ext === ".ts" || ext === ".tsx";
 }
 
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+interface TscResult {
+  errors: string | null;
 }
 
-async function runTsc(tempPath: string, filePath: string, cwd: string): Promise<string | null> {
+async function runTsc(tempPath: string, tempTsconfigPath: string, cwd: string): Promise<TscResult> {
   try {
-    await execFileAsync("npx", ["tsc", "--noEmit", "--pretty", "false", tempPath], {
+    await execFileAsync("npx", ["tsc", "--noEmit", "--pretty", "false", "-p", tempTsconfigPath], {
       cwd,
       timeout: TSC_TIMEOUT_MS,
       maxBuffer: 1024 * 1024 * 10,
     });
-    return null;
+    return { errors: null };
   } catch (err: unknown) {
     const nodeErr = err as { stdout?: Buffer | string; stderr?: Buffer | string };
     const output =
       (nodeErr.stdout && typeof nodeErr.stdout.toString === "function" ? nodeErr.stdout.toString() : "") +
       "\n" +
       (nodeErr.stderr && typeof nodeErr.stderr.toString === "function" ? nodeErr.stderr.toString() : "");
-    const escaped = escapeRegex(filePath);
-    const fileErrorPattern = new RegExp(`\\b${escaped}:`);
-    const relevantErrors = output
-      .split("\n")
-      .filter(line => fileErrorPattern.test(line))
-      .join("\n")
-      .trim();
-    return relevantErrors || null;
+    // With these flags, tsc produces ONLY compilation errors — no summaries,
+    // no diagnostics, no warnings. Every line of output is relevant.
+    const errors = output.trim();
+    return { errors: errors || null };
   }
 }
 
 function cleanupTemp(tempPath: string): void {
   try { fs.rmSync(tempPath, { force: true }); } catch {}
+}
+
+function cleanupTempTsconfig(tempTsconfigPath: string): void {
+  try { fs.rmSync(tempTsconfigPath, { force: true }); } catch {}
 }
 
 export default function (pi: ExtensionAPI) {
@@ -163,11 +210,21 @@ export default function (pi: ExtensionAPI) {
     // Write candidate content to temp file (real file untouched)
     fs.writeFileSync(tempPath, newContent, "utf-8");
 
+    // Create a temporary tsconfig that extends the project's tsconfig.json
+    // but only includes the single temp file.
+    const tempTsconfigPath = path.resolve(ctx.cwd, lintTempTsconfigPath(filePath));
+    const tempTsconfigContent = JSON.stringify({
+      extends: "./tsconfig.json",
+      include: [path.relative(ctx.cwd, tempPath)],
+    }, null, 2);
+    fs.writeFileSync(tempTsconfigPath, tempTsconfigContent, "utf-8");
+
     let blocked = false;
     let blockReason: string | undefined;
 
     try {
-      const errors = await runTsc(tempPath, filePath, ctx.cwd);
+      const { errors } = await runTsc(tempPath, tempTsconfigPath, ctx.cwd);
+
       if (errors) {
         blocked = true;
         blockReason = `TypeScript compilation failed for **${filePath}**:\n\n\`\`\`\n${errors}\n\`\`\`\n\nFix the errors and try again.`;
@@ -177,9 +234,17 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify(`tsc linting skipped for ${filePath}: ${message}. Change allowed.`, "warning");
     } finally {
       cleanupTemp(tempPath);
+      cleanupTempTsconfig(tempTsconfigPath);
     }
 
-    if (blocked) return { block: true, reason: blockReason! };
+    if (blocked) {
+      const errorCount = blockReason!.split("\n").filter(l => l.startsWith("error TS")).length || 1;
+      ctx.ui.notify(
+        `❌ ${filePath}: ${errorCount} compilation error(s) — change blocked`,
+        "warning"
+      );
+      return { block: true, reason: blockReason! };
+    }
   });
 }
 ```
@@ -192,9 +257,12 @@ export default function (pi: ExtensionAPI) {
 - For `edit`: each `oldText` is replaced only once (using `String.replace`), not all occurrences.
 - If `tsc` times out (>30s) or throws unexpectedly, the change is allowed to proceed as a fail-safe.
 - Files exceeding 10 MB are skipped with an informational notification.
-- The extension creates a temp file (`~filename~`) in the same directory — if the process is killed mid-way, the temp file may be left behind (but the real file is never modified).
+- The extension creates two temp files: `~filename.hash.ext` in the same directory and `~tsconfig.hash.json` in the project root — if the process is killed mid-way, both may be left behind (but the real file is never modified).
+
+## Current Status
+The extension has been implemented and is ready for testing.
 
 ## Next Steps
-1. Implement the extension in `.pi/extensions/pre-write-lint.ts`.
-2. Test with a small quantized model on a TypeScript project.
-3. Measure token usage and iteration count compared to the standard workflow.
+1. Test with a small quantized model on a TypeScript project.
+2. Measure token usage and iteration count compared to the standard workflow.
+3. Consider extending support to other statically-typed languages (e.g., `.js` with JSDoc, `.jsx`).
