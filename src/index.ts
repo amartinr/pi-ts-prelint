@@ -9,6 +9,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import { diffLines } from "diff";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -140,17 +141,17 @@ function isTsFile(filePath: string): boolean {
 
 /**
  * Count the number of lines that differ between two strings.
- * Uses a simple line-by-line comparison (O(n) where n = min lines of both files).
- * Returns the count of lines that are different in at least one of the two strings.
+ * Uses the `diff` library's `diffLines` to compute a line-level diff,
+ * then counts the total lines that are added or removed.
+ * This correctly handles insertions, deletions, and moves without
+ * inflating the count due to positional shifts.
  */
 function countModifiedLines(oldContent: string, newContent: string): number {
-  const oldLines = oldContent.split("\n");
-  const newLines = newContent.split("\n");
-  const maxLen = Math.max(oldLines.length, newLines.length);
+  const diffs = diffLines(oldContent, newContent);
   let modified = 0;
-  for (let i = 0; i < maxLen; i++) {
-    if (oldLines[i] !== newLines[i]) {
-      modified++;
+  for (const part of diffs) {
+    if (part.added || part.removed) {
+      modified += part.count;
     }
   }
   return modified;
@@ -252,6 +253,9 @@ export default function (pi: ExtensionAPI) {
     if (!filePath || !isTsFile(filePath)) {
       return;
     }
+
+    // Track which action was attempted so we can report it in error messages
+    const actionType = isToolCallEventType("write", event) ? "write" : "edit";
 
     const config = resolveConfig(ctx.cwd);
     const absPath = path.resolve(ctx.cwd, filePath);
@@ -366,7 +370,7 @@ export default function (pi: ExtensionAPI) {
         // Replace temp file paths with the real file path so the agent
         // can directly fix the errors without mapping temp → real.
         const formattedErrors = errors.replaceAll(tempPath, filePath);
-        blockReason = `[pi-ts-lint] Fix linting errors and try again.\n${formattedErrors}`;
+        blockReason = `[pi-ts-lint] Couldn't ${actionType} ${filePath}: the file was NOT modified. Fix linting errors and try again.\n${formattedErrors}`;
       }
     } catch (err: unknown) {
       // Unexpected error (e.g., npx not found) — allow the change as a fail-safe
@@ -390,7 +394,7 @@ export default function (pi: ExtensionAPI) {
       // Notify about blocking errors (warning level — visible, attention-grabbing)
       const errorCount = blockReason!.split("\n").filter(l => l.startsWith("error TS")).length || 1;
       ctx.ui.notify(
-        `❌ ${filePath}: ${errorCount} compilation error(s) — change blocked`,
+        `❌ ${filePath}: ${errorCount} compilation error(s) — ${actionType.toUpperCase()} blocked, file NOT modified`,
         "warning"
       );
       return { block: true, reason: blockReason! };
