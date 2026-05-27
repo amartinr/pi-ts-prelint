@@ -1,5 +1,5 @@
 {
-  "name": "pi-ts-prelint",
+  "name": "@amartinr/pi-ts-prelint",
   "version": "0.0.1-alpha.1",
   "description": "Pre-write TypeScript linting for pi — blocks write/edit on .ts/.tsx files if tsc compilation fails",
   "main": "./dist/index.js",
