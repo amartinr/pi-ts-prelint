@@ -1,4 +1,4 @@
-# pi-ts-lint
+# pi-ts-prelint
 
 > ⚠️ **Experimental — untested hypothesis**
 >
@@ -36,16 +36,16 @@ Configuration is loaded from two sources, merged with project-level taking prior
 
 | Scope | Path |
 |-------|------|
-| Global | `~/.pi/agent/extensions/pi-ts-lint/config.json` |
-| Project | `.pi/pi-ts-lint.json` |
+| Global | `~/.pi/agent/extensions/pi-ts-prelint/config.json` |
+| Project | `.pi/pi-ts-prelint.json` |
 
 ### Config file format
 
 ```json
 {
   "changeComplexity": {
-    "minAbsoluteLines": 5,
-    "minPercentage": 5
+    "minAbsoluteLines": 15,
+    "minPercentage": 10
   },
   "maxFileSizeMB": 10,
   "tscTimeoutMs": 30000
@@ -56,8 +56,8 @@ Configuration is loaded from two sources, merged with project-level taking prior
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `changeComplexity.minAbsoluteLines` | `5` | Skip linting if modified lines < this value (and percentage is also below threshold) |
-| `changeComplexity.minPercentage` | `5` | Skip linting if modified lines / total lines < this % (and absolute count is also below threshold) |
+| `changeComplexity.minAbsoluteLines` | `15` | Lint only when modified lines >= this AND percentage >= minPercentage |
+| `changeComplexity.minPercentage` | `10` | Lint only when modified lines >= minAbsoluteLines AND percentage >= this % |
 | `maxFileSizeMB` | `10` | Skip linting for files exceeding this size in MB |
 | `tscTimeoutMs` | `30000` | Timeout for `tsc` in milliseconds |
 
@@ -66,7 +66,7 @@ Configuration is loaded from two sources, merged with project-level taking prior
 **Skip linting on smaller edits (project-level):**
 
 ```json
-// .pi/pi-ts-lint.json
+// .pi/pi-ts-prelint.json
 {
   "changeComplexity": {
     "minAbsoluteLines": 3,
@@ -78,7 +78,7 @@ Configuration is loaded from two sources, merged with project-level taking prior
 **Disable file size limit (project-level):**
 
 ```json
-// .pi/pi-ts-lint.json
+// .pi/pi-ts-prelint.json
 {
   "maxFileSizeMB": 0
 }
@@ -87,7 +87,7 @@ Configuration is loaded from two sources, merged with project-level taking prior
 **Increase tsc timeout for large projects (global):**
 
 ```json
-// ~/.pi/agent/extensions/pi-ts-lint/config.json
+// ~/.pi/agent/extensions/pi-ts-prelint/config.json
 {
   "tscTimeoutMs": 60000
 }
@@ -98,11 +98,11 @@ Configuration is loaded from two sources, merged with project-level taking prior
 Global config is loaded first, then project config is deep-merged on top. You only need to specify the keys you want to override:
 
 ```json
-// ~/.pi/agent/extensions/pi-ts-lint/config.json (global defaults)
+// ~/.pi/agent/extensions/pi-ts-prelint/config.json (global defaults)
 {
   "changeComplexity": {
-    "minAbsoluteLines": 5,
-    "minPercentage": 5
+    "minAbsoluteLines": 15,
+    "minPercentage": 10
   },
   "maxFileSizeMB": 10,
   "tscTimeoutMs": 30000
@@ -110,13 +110,13 @@ Global config is loaded first, then project config is deep-merged on top. You on
 ```
 
 ```json
-// .pi/pi-ts-lint.json (project overrides only)
+// .pi/pi-ts-prelint.json (project overrides only)
 {
   "changeComplexity": {
     "minAbsoluteLines": 3
   }
 }
-// Result: minAbsoluteLines=3, minPercentage=5 (unchanged from global), maxFileSizeMB=10 (unchanged)
+// Result: minAbsoluteLines=3, minPercentage=10 (unchanged from global), maxFileSizeMB=10 (unchanged)
 ```
 
 ## Installation
@@ -128,7 +128,7 @@ Global config is loaded first, then project config is deep-merged on top. You on
 Copy the extension to your global extensions directory:
 
 ```bash
-mkdir -p ~/.pi/agent/extensions/pi-ts-lint
+mkdir -p ~/.pi/agent/extensions/pi-ts-prelint
 # The extension is loaded automatically as a pi package
 ```
 
@@ -138,11 +138,11 @@ Add to your `.pi/settings.json`:
 
 ```json
 {
-  "packages": ["npm:pi-ts-lint"]
+  "packages": ["npm:pi-ts-prelint"]
 }
 ```
 
-Or place a `.pi/pi-ts-lint.json` in your project root to customize thresholds.
+Or place a `.pi/pi-ts-prelint.json` in your project root to customize thresholds.
 
 ## Design
 

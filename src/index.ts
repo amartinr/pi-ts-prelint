@@ -63,14 +63,14 @@ function loadConfigFile<T>(filePath: string): T | null {
 }
 
 function resolveConfig(cwd: string): PiTsLintConfig {
-  // Global config: ~/.pi/agent/extensions/pi-ts-lint/config.json
+  // Global config: ~/.pi/agent/extensions/pi-ts-prelint/config.json
   const homeDir = process.env.HOME;
   const globalConfigPath = homeDir
-    ? path.join(homeDir, ".pi", "agent", "extensions", "pi-ts-lint", "config.json")
+    ? path.join(homeDir, ".pi", "agent", "extensions", "pi-ts-prelint", "config.json")
     : null;
 
-  // Project config: .pi/pi-ts-lint.json (relative to cwd)
-  const projectConfigPath = path.join(cwd, ".pi", "pi-ts-lint.json");
+  // Project config: .pi/pi-ts-prelint.json (relative to cwd)
+  const projectConfigPath = path.join(cwd, ".pi", "pi-ts-prelint.json");
 
   const globalConfig = globalConfigPath ? loadConfigFile<PiTsLintConfig>(globalConfigPath) : null;
   const projectConfig = loadConfigFile<PiTsLintConfig>(projectConfigPath);
@@ -158,25 +158,25 @@ function countModifiedLines(oldContent: string, newContent: string): number {
 }
 
 /**
- * Determine whether linting should be skipped based on change complexity.
- * Linting is skipped when the change is too small to justify the cost.
- * A change is considered "small" if it meets EITHER condition:
- *   1. Modified lines < MIN_ABSOLUTE_LINES
- *   2. Modified lines / total lines < MIN_PERCENTAGE
+ * Determine whether linting should be performed based on change complexity.
+ * Linting is performed only when the change is large enough to justify the cost.
+ * A change is considered "large" only when BOTH conditions are met:
+ *   1. Modified lines >= MIN_ABSOLUTE_LINES
+ *   2. Modified lines / total lines >= MIN_PERCENTAGE
  *
  * This allows the agent to make small or localized changes without friction,
  * while ensuring that significant changes (many lines AND high percentage)
  * are validated. The lint still blocks on errors when it runs.
  */
-function shouldSkipLint(existingContent: string, newContent: string, changeComplexity: PiTsLintConfig["changeComplexity"]): boolean {
+function shouldLint(existingContent: string, newContent: string, changeComplexity: PiTsLintConfig["changeComplexity"]): boolean {
   const modifiedLines = countModifiedLines(existingContent, newContent);
   const totalLines = existingContent.split("\n").length;
 
-  if (totalLines === 0) return false; // new file — always lint
+  if (totalLines === 0) return true; // new file — always lint
 
   const percentage = (modifiedLines / totalLines) * 100;
 
-  return modifiedLines < changeComplexity.minAbsoluteLines || percentage < changeComplexity.minPercentage;
+  return modifiedLines >= changeComplexity.minAbsoluteLines && percentage >= changeComplexity.minPercentage;
 }
 
 /**
@@ -342,8 +342,8 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
-      // Skip linting for small changes that don't justify the cost
-      if (shouldSkipLint(existingContent, newContent, config.changeComplexity)) {
+      // Only lint changes that are large enough to justify the cost
+      if (!shouldLint(existingContent, newContent, config.changeComplexity)) {
         return;
       }
     }
@@ -374,7 +374,7 @@ export default function (pi: ExtensionAPI) {
         // Replace temp file paths with the real file path so the agent
         // can directly fix the errors without mapping temp → real.
         const formattedErrors = errors.replaceAll(tempPath, filePath);
-        blockReason = `[pi-ts-lint] Couldn't ${actionType} ${filePath}: the file was NOT modified. Fix linting errors and try again.\n${formattedErrors}`;
+        blockReason = `[pi-ts-prelint] Couldn't ${actionType} ${filePath}: the file was NOT modified. Fix linting errors and try again.\n${formattedErrors}`;
       }
     } catch (err: unknown) {
       // Unexpected error (e.g., npx not found) — allow the change as a fail-safe
