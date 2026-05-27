@@ -1,19 +1,39 @@
 {
-  "name": "pi-intellint",
-  "version": "1.0.0",
-  "description": "Pre-write TypeScript linting extension for pi — blocks writes/edits that fail tsc compilation",
+  "name": "pi-ts-lint",
+  "version": "0.1.0",
+  "description": "Pre-write TypeScript linting for pi — blocks write/edit on .ts/.tsx files if tsc compilation fails",
+  "main": "./src/index.ts",
+  "type": "module",
+  "scripts": {
+    "lint": "tsc --noEmit"
+  },
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "typescript",
+    "lint",
+    "pre-write",
+    "tsc",
+    "coding-agent"
   ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/earendil-works/pi-ts-lint"
+  },
+  "bugs": {
+    "url": "https://github.com/earendil-works/pi-ts-lint/issues"
+  },
+  "homepage": "https://github.com/earendil-works/pi-ts-lint",
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },
-  "pi": {
-    "extensions": [
-      "./src/pre-write-lint.ts"
-    ]
-  },
   "devDependencies": {
     "typescript": "^6.0.3"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
   }
 }
