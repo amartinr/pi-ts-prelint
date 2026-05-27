@@ -33,8 +33,8 @@ interface PiTsLintConfig {
 
 const DEFAULT_CONFIG: PiTsLintConfig = {
   changeComplexity: {
-    minAbsoluteLines: 5,
-    minPercentage: 5,
+    minAbsoluteLines: 15,
+    minPercentage: 10,
   },
   maxFileSizeMB: 10,
   tscTimeoutMs: 30_000,
@@ -160,9 +160,13 @@ function countModifiedLines(oldContent: string, newContent: string): number {
 /**
  * Determine whether linting should be skipped based on change complexity.
  * Linting is skipped when the change is too small to justify the cost.
- * Both conditions must be met:
+ * A change is considered "small" if it meets EITHER condition:
  *   1. Modified lines < MIN_ABSOLUTE_LINES
  *   2. Modified lines / total lines < MIN_PERCENTAGE
+ *
+ * This allows the agent to make small or localized changes without friction,
+ * while ensuring that significant changes (many lines AND high percentage)
+ * are validated. The lint still blocks on errors when it runs.
  */
 function shouldSkipLint(existingContent: string, newContent: string, changeComplexity: PiTsLintConfig["changeComplexity"]): boolean {
   const modifiedLines = countModifiedLines(existingContent, newContent);
@@ -172,7 +176,7 @@ function shouldSkipLint(existingContent: string, newContent: string, changeCompl
 
   const percentage = (modifiedLines / totalLines) * 100;
 
-  return modifiedLines < changeComplexity.minAbsoluteLines && percentage < changeComplexity.minPercentage;
+  return modifiedLines < changeComplexity.minAbsoluteLines || percentage < changeComplexity.minPercentage;
 }
 
 /**
