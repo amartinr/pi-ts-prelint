@@ -43,7 +43,7 @@
   },
   "homepage": "https://github.com/earendil-works/pi-ts-lint",
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.75.0"
+    "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
     "typescript": "^6.0.3"
