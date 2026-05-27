@@ -2,9 +2,26 @@
   "name": "pi-ts-lint",
   "version": "0.1.0",
   "description": "Pre-write TypeScript linting for pi — blocks write/edit on .ts/.tsx files if tsc compilation fails",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
     "lint": "tsc --noEmit"
   },
   "keywords": [
@@ -15,7 +32,7 @@
     "tsc",
     "coding-agent"
   ],
-  "author": "",
+  "author": "A. Martin <abel.martin.ruiz@gmail.com>",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -26,14 +43,14 @@
   },
   "homepage": "https://github.com/earendil-works/pi-ts-lint",
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "^0.75.0"
   },
   "devDependencies": {
     "typescript": "^6.0.3"
   },
   "pi": {
     "extensions": [
-      "./src/index.ts"
+      "./dist/index.js"
     ]
   }
 }
