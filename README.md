@@ -1,14 +1,34 @@
 # pi-ts-lint
 
-Pre-write TypeScript linting for pi — blocks `write`/`edit` on `.ts`/`.tsx` files if `tsc` compilation fails.
+> ⚠️ **Experimental — untested hypothesis**
+>
+> This extension is based on an unproven idea: that blocking writes on TypeScript compilation errors improves code quality and saves tokens. **No data supports this claim yet.** It is in early development. APIs, configuration, and behavior may change without notice.
+
+## What it does
+
+Intercepts `write` and `edit` tool calls on `.ts`/`.tsx` files and runs `tsc --noEmit` before allowing the change to proceed. If compilation fails, the change is blocked with structured error messages.
+
+This is an experiment. We don't yet know whether it actually helps.
 
 ## How it works
 
+This is a bit hacky — it doesn't lint the whole project, just the single file being written or edited:
+
 1. Intercepts `write` and `edit` tool calls for TypeScript files.
 2. Writes candidate content to a temp file (prefixed with `~`).
-3. Runs `tsc --noEmit` via a temporary tsconfig that extends the project's `tsconfig.json`.
-4. Blocks the change if compilation fails, returning structured error messages.
-5. If compilation succeeds, cleans up and lets the change proceed.
+3. Creates a temporary tsconfig that extends the project's `tsconfig.json` but **only includes that single temp file**.
+4. Runs `tsc --noEmit` against the temp file.
+5. Blocks the change if compilation fails, returning structured error messages.
+6. If compilation succeeds, cleans up and lets the change proceed.
+
+Because only one file is checked, cross-file dependency errors are not caught. This is a trade-off for speed.
+
+## Limitations
+
+- Only covers `.ts` and `.tsx` files.
+- Requires `npx` and a local `typescript` installation in the project.
+- If `tsc` times out (>30s) or throws unexpectedly, the change is allowed to proceed as a fail-safe.
+- Files exceeding 10 MB are skipped.
 
 ## Configuration
 
@@ -101,13 +121,14 @@ Global config is loaded first, then project config is deep-merged on top. You on
 
 ## Installation
 
+> ⚠️ This is an experimental extension based on an untested hypothesis. Use at your own discretion.
+
 ### Global (all projects)
 
-Copy the config file and extension to your global extensions directory:
+Copy the extension to your global extensions directory:
 
 ```bash
 mkdir -p ~/.pi/agent/extensions/pi-ts-lint
-# Copy config.json from this repo or create your own
 # The extension is loaded automatically as a pi package
 ```
 
@@ -122,6 +143,10 @@ Add to your `.pi/settings.json`:
 ```
 
 Or place a `.pi/pi-ts-lint.json` in your project root to customize thresholds.
+
+## Design
+
+The full design document, including the hypothesis and implementation details, is available in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## License
 

@@ -1,6 +1,6 @@
 {
   "name": "pi-ts-lint",
-  "version": "0.1.0",
+  "version": "0.0.1-alpha",
   "description": "Pre-write TypeScript linting for pi — blocks write/edit on .ts/.tsx files if tsc compilation fails",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
