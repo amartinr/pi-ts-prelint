@@ -25,12 +25,13 @@
     "lint": "tsc --noEmit"
   },
   "keywords": [
+    "pi",
     "pi-package",
+    "pi-extension",
     "typescript",
     "lint",
     "pre-write",
-    "tsc",
-    "coding-agent"
+    "tsc"
   ],
   "author": "A. Martin <abel.martin.ruiz@gmail.com>",
   "license": "MIT",
