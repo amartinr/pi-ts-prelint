@@ -1,0 +1,19 @@
+{
+  "name": "pi-intellint",
+  "version": "1.0.0",
+  "description": "Pre-write TypeScript linting extension for pi — blocks writes/edits that fail tsc compilation",
+  "keywords": [
+    "pi-package"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./src/pre-write-lint.ts"
+    ]
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}
