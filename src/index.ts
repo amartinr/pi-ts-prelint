@@ -62,6 +62,18 @@ function lintTempPath(filePath: string): string {
   return path.join(dir, `~${name}.${id}${ext}`);
 }
 
+/**
+ * Generate a temporary tsconfig path for linting.
+ * Placed in the project root (cwd) so it can extend the main tsconfig.json.
+ * Uses the same hash as the temp TS file to link them, and ~ prefix so it
+ * won't be picked up by other tsconfig discovery patterns.
+ * e.g. project root → ~tsconfig.a1b2c3d.json
+ */
+function lintTempTsconfigPath(filePath: string): string {
+  const id = lintTempId(path.basename(filePath));
+  return path.join("~tsconfig.${id}.json");
+}
+
 function isTsFile(filePath: string): boolean {
   // .toLowerCase() ensures case-insensitive matching (Windows paths are case-insensitive)
   const ext = path.extname(filePath).toLowerCase();
@@ -78,11 +90,13 @@ interface TscResult {
 }
 
 /**
- * Run `tsc --noEmit` on the temp file and extract compilation errors.
+ * Run `tsc --noEmit` on the temp file using a temporary tsconfig.
+ * The temp tsconfig extends the project's tsconfig.json (loading correct
+ * moduleResolution, lib, etc.) but only includes the single temp file.
  */
-async function runTsc(tempPath: string, cwd: string): Promise<TscResult> {
+async function runTsc(tempPath: string, tempTsconfigPath: string, cwd: string): Promise<TscResult> {
   try {
-    await execFileAsync("npx", ["tsc", "--noEmit", "--pretty", "false", "--ignoreConfig", tempPath], {
+    await execFileAsync("npx", ["tsc", "--noEmit", "--pretty", "false", "-p", tempTsconfigPath], {
       cwd,
       timeout: TSC_TIMEOUT_MS,
       maxBuffer: 1024 * 1024 * 10,
@@ -95,18 +109,15 @@ async function runTsc(tempPath: string, cwd: string): Promise<TscResult> {
       "\n" +
       (nodeErr.stderr && typeof nodeErr.stderr.toString === "function" ? nodeErr.stderr.toString() : "");
 
-    // tsc output format:
+    // tsc output format (with --pretty false, loaded via temp tsconfig):
     //   src/~file.a1b2c3d.ts:10:5 - error TS1234: Some error message
     //
-    // We compile only the temp file, so all lines with "error" are relevant.
-    const lines = output.split("\n");
-    const errorLines = lines
-      .filter(line => /\berror\b/i.test(line))
-      .join("\n")
-      .trim();
+    // With these flags, tsc produces ONLY compilation errors — no summaries,
+    // no diagnostics, no warnings. Every line of output is relevant.
+    const errors = output.trim();
 
     return {
-      errors: errorLines || null,
+      errors: errors || null,
     };
   }
 }
@@ -117,6 +128,17 @@ async function runTsc(tempPath: string, cwd: string): Promise<TscResult> {
 function cleanupTemp(tempPath: string): void {
   try {
     fs.rmSync(tempPath, { force: true });
+  } catch {
+    // Best-effort cleanup
+  }
+}
+
+/**
+ * Clean up the temporary tsconfig, ignoring errors.
+ */
+function cleanupTempTsconfig(tempTsconfigPath: string): void {
+  try {
+    fs.rmSync(tempTsconfigPath, { force: true });
   } catch {
     // Best-effort cleanup
   }
@@ -219,11 +241,22 @@ export default function (pi: ExtensionAPI) {
     // without touching the real file (safe for multi-agent scenarios).
     fs.writeFileSync(tempPath, newContent, "utf-8");
 
+    // Create a temporary tsconfig in the project root that extends the
+    // main tsconfig.json (preserving moduleResolution, lib, etc.) but only
+    // includes the single temp file. This avoids --ignoreConfig which would
+    // load tsc without the project's module resolution settings.
+    const tempTsconfigPath = path.resolve(ctx.cwd, lintTempTsconfigPath(filePath));
+    const tempTsconfigContent = JSON.stringify({
+      extends: "./tsconfig.json",
+      include: [path.relative(ctx.cwd, tempPath)],
+    }, null, 2);
+    fs.writeFileSync(tempTsconfigPath, tempTsconfigContent, "utf-8");
+
     let blocked = false;
     let blockReason: string | undefined;
 
     try {
-      const { errors } = await runTsc(tempPath, ctx.cwd);
+      const { errors } = await runTsc(tempPath, tempTsconfigPath, ctx.cwd);
 
       if (errors) {
         blocked = true;
@@ -242,8 +275,9 @@ export default function (pi: ExtensionAPI) {
         "warning"
       );
     } finally {
-      // Always clean up the temp file.
+      // Always clean up both temp files.
       cleanupTemp(tempPath);
+      cleanupTempTsconfig(tempTsconfigPath);
     }
 
     if (blocked) {
