@@ -53,12 +53,11 @@ function lintTempId(basename: string): string {
  * (e.g. ".ts~"). The extension must remain exactly ".ts" or ".tsx".
  * e.g. src/foo.ts → src/~foo.a1b2c3d.ts
  */
-function lintTempPath(filePath: string): string {
+function lintTempPath(filePath: string, id: string): string {
   const dir = path.dirname(filePath);
   const base = path.basename(filePath);
   const name = base.slice(0, base.lastIndexOf("."));
   const ext = base.slice(base.lastIndexOf("."));
-  const id = lintTempId(base);
   return path.join(dir, `~${name}.${id}${ext}`);
 }
 
@@ -69,9 +68,8 @@ function lintTempPath(filePath: string): string {
  * won't be picked up by other tsconfig discovery patterns.
  * e.g. project root → ~tsconfig.a1b2c3d.json
  */
-function lintTempTsconfigPath(filePath: string): string {
-  const id = lintTempId(path.basename(filePath));
-  return path.join("~tsconfig.${id}.json");
+function lintTempTsconfigPath(id: string): string {
+  return path.join(`~tsconfig.${id}.json`);
 }
 
 function isTsFile(filePath: string): boolean {
@@ -160,7 +158,8 @@ export default function (pi: ExtensionAPI) {
     }
 
     const absPath = path.resolve(ctx.cwd, filePath);
-    const tempPath = path.resolve(ctx.cwd, lintTempPath(filePath));
+    const tempId = lintTempId(path.basename(filePath));
+    const tempPath = path.resolve(ctx.cwd, lintTempPath(filePath, tempId));
 
     // Skip files that are too large to lint (avoids memory issues)
     let existingSize = 0;
@@ -245,7 +244,7 @@ export default function (pi: ExtensionAPI) {
     // main tsconfig.json (preserving moduleResolution, lib, etc.) but only
     // includes the single temp file. This avoids --ignoreConfig which would
     // load tsc without the project's module resolution settings.
-    const tempTsconfigPath = path.resolve(ctx.cwd, lintTempTsconfigPath(filePath));
+    const tempTsconfigPath = path.resolve(ctx.cwd, lintTempTsconfigPath(tempId));
     const tempTsconfigContent = JSON.stringify({
       extends: "./tsconfig.json",
       include: [path.relative(ctx.cwd, tempPath)],
@@ -260,7 +259,10 @@ export default function (pi: ExtensionAPI) {
 
       if (errors) {
         blocked = true;
-        blockReason = `TypeScript compilation failed for **${filePath}**:\n\n\`\`\`\n${errors}\n\`\`\`\n\nFix the errors and try again.`;
+        // Replace temp file paths with the real file path so the agent
+        // can directly fix the errors without mapping temp → real.
+        const formattedErrors = errors.replaceAll(tempPath, filePath);
+        blockReason = `[pi-ts-lint] Fix linting errors and try again.\n${formattedErrors}`;
       }
     } catch (err: unknown) {
       // Unexpected error (e.g., npx not found) — allow the change as a fail-safe
