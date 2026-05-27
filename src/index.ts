@@ -82,7 +82,7 @@ interface TscResult {
  */
 async function runTsc(tempPath: string, cwd: string): Promise<TscResult> {
   try {
-    await execFileAsync("npx", ["tsc", "--noEmit", "--pretty", "false", tempPath], {
+    await execFileAsync("npx", ["tsc", "--noEmit", "--pretty", "false", "--ignoreConfig", tempPath], {
       cwd,
       timeout: TSC_TIMEOUT_MS,
       maxBuffer: 1024 * 1024 * 10,
