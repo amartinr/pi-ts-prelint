@@ -17,17 +17,70 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-// tsconfig.json target is ES2022, so numeric separators (30_000) are supported
-const TSC_TIMEOUT_MS = 30_000;
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const GIT_SHORT_HASH_LEN = 7;
 
-// Thresholds for skipping linting on small changes.
-// Linting is skipped if BOTH conditions are met:
-//   1. Modified lines < MIN_ABSOLUTE_LINES
-//   2. Modified lines / total lines < MIN_PERCENTAGE
-const MIN_ABSOLUTE_LINES = 5;
-const MIN_PERCENTAGE = 5; // percent
+// ─── Configuration ───────────────────────────────────────────────────────────
+
+interface PiTsLintConfig {
+  changeComplexity: {
+    minAbsoluteLines: number;
+    minPercentage: number;
+  };
+  maxFileSizeMB: number;
+  tscTimeoutMs: number;
+}
+
+const DEFAULT_CONFIG: PiTsLintConfig = {
+  changeComplexity: {
+    minAbsoluteLines: 5,
+    minPercentage: 5,
+  },
+  maxFileSizeMB: 10,
+  tscTimeoutMs: 30_000,
+};
+
+function deepMerge<T>(base: T, override: Partial<T>): T {
+  const result = { ...base };
+  for (const key of Object.keys(override) as (keyof T)[]) {
+    const val = override[key];
+    if (val != null && typeof val === "object" && !Array.isArray(val) && result[key] != null && typeof result[key] === "object" && !Array.isArray(result[key])) {
+      (result[key] as any) = deepMerge(result[key], val as any);
+    } else {
+      (result as any)[key] = val;
+    }
+  }
+  return result;
+}
+
+function loadConfigFile<T>(filePath: string): T | null {
+  try {
+    const raw = fs.readFileSync(filePath, "utf-8");
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+function resolveConfig(cwd: string): PiTsLintConfig {
+  // Global config: ~/.pi/agent/extensions/pi-ts-lint/config.json
+  const homeDir = process.env.HOME;
+  const globalConfigPath = homeDir
+    ? path.join(homeDir, ".pi", "agent", "extensions", "pi-ts-lint", "config.json")
+    : null;
+
+  // Project config: .pi/pi-ts-lint.json (relative to cwd)
+  const projectConfigPath = path.join(cwd, ".pi", "pi-ts-lint.json");
+
+  const globalConfig = globalConfigPath ? loadConfigFile<PiTsLintConfig>(globalConfigPath) : null;
+  const projectConfig = loadConfigFile<PiTsLintConfig>(projectConfigPath);
+
+  return deepMerge(
+    deepMerge(DEFAULT_CONFIG, globalConfig ?? {}),
+    projectConfig ?? {}
+  );
+}
+
+// ─── End configuration ───────────────────────────────────────────────────────
 
 /**
  * Generate a short, git-like hash from a string.
@@ -110,7 +163,7 @@ function countModifiedLines(oldContent: string, newContent: string): number {
  *   1. Modified lines < MIN_ABSOLUTE_LINES
  *   2. Modified lines / total lines < MIN_PERCENTAGE
  */
-function shouldSkipLint(existingContent: string, newContent: string): boolean {
+function shouldSkipLint(existingContent: string, newContent: string, changeComplexity: PiTsLintConfig["changeComplexity"]): boolean {
   const modifiedLines = countModifiedLines(existingContent, newContent);
   const totalLines = existingContent.split("\n").length;
 
@@ -118,7 +171,7 @@ function shouldSkipLint(existingContent: string, newContent: string): boolean {
 
   const percentage = (modifiedLines / totalLines) * 100;
 
-  return modifiedLines < MIN_ABSOLUTE_LINES && percentage < MIN_PERCENTAGE;
+  return modifiedLines < changeComplexity.minAbsoluteLines && percentage < changeComplexity.minPercentage;
 }
 
 /**
@@ -135,11 +188,11 @@ interface TscResult {
  * The temp tsconfig extends the project's tsconfig.json (loading correct
  * moduleResolution, lib, etc.) but only includes the single temp file.
  */
-async function runTsc(tempPath: string, tempTsconfigPath: string, cwd: string): Promise<TscResult> {
+async function runTsc(tempPath: string, tempTsconfigPath: string, cwd: string, timeoutMs: number): Promise<TscResult> {
   try {
     await execFileAsync("npx", ["tsc", "--noEmit", "--pretty", "false", "-p", tempTsconfigPath], {
       cwd,
-      timeout: TSC_TIMEOUT_MS,
+      timeout: timeoutMs,
       maxBuffer: 1024 * 1024 * 10,
     });
     return { errors: null }; // Success
@@ -200,9 +253,12 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    const config = resolveConfig(ctx.cwd);
     const absPath = path.resolve(ctx.cwd, filePath);
     const tempId = lintTempId(path.basename(filePath));
     const tempPath = path.resolve(ctx.cwd, lintTempPath(filePath, tempId));
+
+    const maxFileSize = config.maxFileSizeMB * 1024 * 1024;
 
     // Skip files that are too large to lint (avoids memory issues)
     let existingSize = 0;
@@ -211,9 +267,9 @@ export default function (pi: ExtensionAPI) {
     } catch {
       // File doesn't exist yet
     }
-    if (existingSize > MAX_FILE_SIZE) {
+    if (existingSize > maxFileSize) {
       ctx.ui.notify(
-        `Skipping lint for ${filePath}: file exceeds ${MAX_FILE_SIZE / 1024 / 1024} MB limit.`,
+        `Skipping lint for ${filePath}: file exceeds ${config.maxFileSizeMB} MB limit.`,
         "info"
       );
       return;
@@ -225,9 +281,9 @@ export default function (pi: ExtensionAPI) {
     if (isToolCallEventType("write", event)) {
       newContent = event.input.content;
       // Check size of new content for write events
-      if (newContent.length > MAX_FILE_SIZE) {
+      if (newContent.length > maxFileSize) {
         ctx.ui.notify(
-          `Skipping lint for ${filePath}: new content exceeds ${MAX_FILE_SIZE / 1024 / 1024} MB limit.`,
+          `Skipping lint for ${filePath}: new content exceeds ${config.maxFileSizeMB} MB limit.`,
           "info"
         );
         return;
@@ -279,7 +335,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       // Skip linting for small changes that don't justify the cost
-      if (shouldSkipLint(existingContent, newContent)) {
+      if (shouldSkipLint(existingContent, newContent, config.changeComplexity)) {
         return;
       }
     }
@@ -303,7 +359,7 @@ export default function (pi: ExtensionAPI) {
     let blockReason: string | undefined;
 
     try {
-      const { errors } = await runTsc(tempPath, tempTsconfigPath, ctx.cwd);
+      const { errors } = await runTsc(tempPath, tempTsconfigPath, ctx.cwd, config.tscTimeoutMs);
 
       if (errors) {
         blocked = true;
