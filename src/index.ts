@@ -22,6 +22,13 @@ const TSC_TIMEOUT_MS = 30_000;
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const GIT_SHORT_HASH_LEN = 7;
 
+// Thresholds for skipping linting on small changes.
+// Linting is skipped if BOTH conditions are met:
+//   1. Modified lines < MIN_ABSOLUTE_LINES
+//   2. Modified lines / total lines < MIN_PERCENTAGE
+const MIN_ABSOLUTE_LINES = 5;
+const MIN_PERCENTAGE = 5; // percent
+
 /**
  * Generate a short, git-like hash from a string.
  * Returns the first `len` hex characters of the SHA-256 digest.
@@ -76,6 +83,42 @@ function isTsFile(filePath: string): boolean {
   // .toLowerCase() ensures case-insensitive matching (Windows paths are case-insensitive)
   const ext = path.extname(filePath).toLowerCase();
   return ext === ".ts" || ext === ".tsx";
+}
+
+/**
+ * Count the number of lines that differ between two strings.
+ * Uses a simple line-by-line comparison (O(n) where n = min lines of both files).
+ * Returns the count of lines that are different in at least one of the two strings.
+ */
+function countModifiedLines(oldContent: string, newContent: string): number {
+  const oldLines = oldContent.split("\n");
+  const newLines = newContent.split("\n");
+  const maxLen = Math.max(oldLines.length, newLines.length);
+  let modified = 0;
+  for (let i = 0; i < maxLen; i++) {
+    if (oldLines[i] !== newLines[i]) {
+      modified++;
+    }
+  }
+  return modified;
+}
+
+/**
+ * Determine whether linting should be skipped based on change complexity.
+ * Linting is skipped when the change is too small to justify the cost.
+ * Both conditions must be met:
+ *   1. Modified lines < MIN_ABSOLUTE_LINES
+ *   2. Modified lines / total lines < MIN_PERCENTAGE
+ */
+function shouldSkipLint(existingContent: string, newContent: string): boolean {
+  const modifiedLines = countModifiedLines(existingContent, newContent);
+  const totalLines = existingContent.split("\n").length;
+
+  if (totalLines === 0) return false; // new file — always lint
+
+  const percentage = (modifiedLines / totalLines) * 100;
+
+  return modifiedLines < MIN_ABSOLUTE_LINES && percentage < MIN_PERCENTAGE;
 }
 
 /**
@@ -233,6 +276,11 @@ export default function (pi: ExtensionAPI) {
         if (newContent.includes(oldText!)) {
           newContent = newContent.replace(oldText!, newText ?? "");
         }
+      }
+
+      // Skip linting for small changes that don't justify the cost
+      if (shouldSkipLint(existingContent, newContent)) {
+        return;
       }
     }
 
