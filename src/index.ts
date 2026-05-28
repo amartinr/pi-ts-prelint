@@ -3,8 +3,9 @@
  *
  * Intercepts `write` and `edit` tool calls for TypeScript files (.ts, .tsx),
  * writes the candidate content to a temp file (prefixed with ~),
- * runs `tsc --noEmit` on the temp file, and blocks the change if compilation
- * fails. The real file is never modified during linting.
+ * runs `tsc --noEmit` on the temp file, and injects compilation errors
+ * into the tool result so the model can fix them. The change is always
+ * applied — the model sees the errors and the modified file state.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -166,7 +167,7 @@ function countModifiedLines(oldContent: string, newContent: string): number {
  *
  * This allows the agent to make small or localized changes without friction,
  * while ensuring that significant changes (many lines AND high percentage)
- * are validated. The lint still blocks on errors when it runs.
+ * are validated. Errors are injected into the tool result so the model can fix them.
  */
 function shouldLint(existingContent: string, newContent: string, changeComplexity: PiTsLintConfig["changeComplexity"]): boolean {
   const modifiedLines = countModifiedLines(existingContent, newContent);
@@ -243,7 +244,44 @@ function cleanupTempTsconfig(tempTsconfigPath: string): void {
   }
 }
 
+/**
+ * Store lint errors keyed by toolCallId so they can be injected
+ * into the tool_result by the tool_result handler.
+ */
+const lintErrorsByToolCallId = new Map<string, string>();
+
+/**
+ * Clean up the stored lint errors for a given toolCallId.
+ */
+function clearLintErrors(toolCallId: string): void {
+  lintErrorsByToolCallId.delete(toolCallId);
+}
+
 export default function (pi: ExtensionAPI) {
+  // ─── tool_result: inject lint errors into the model's view ────────────────
+  // Cast to any to bypass TypeScript overload resolution (tool_result is
+  // available in pi >= 0.75 but the overload union can be tricky)
+  ;(pi as any).on("tool_result", (event: { toolName: string; toolCallId: string; input: { path?: string }; content: unknown }) => {
+    const toolCallId = event.toolCallId;
+    const storedErrors = lintErrorsByToolCallId.get(toolCallId);
+
+    if (!storedErrors) return;
+
+    // Only inject for write/edit on .ts/.tsx files
+    if (event.toolName !== "write" && event.toolName !== "edit") return;
+    const filePath = (event.input as { path?: string })?.path;
+    if (!filePath || !isTsFile(filePath)) return;
+
+    // Remove from map to prevent double-injection
+    lintErrorsByToolCallId.delete(toolCallId);
+
+    // Inject lint errors into the result content
+    const existingContent = typeof event.content === "string" ? event.content : "";
+    return {
+      content: `${existingContent}\n\n${storedErrors}`,
+    };
+  });
+
   pi.on("tool_call", async (event, ctx: ExtensionContext) => {
     // Only intercept write and edit tool calls
     if (
@@ -363,18 +401,16 @@ export default function (pi: ExtensionAPI) {
     }, null, 2);
     fs.writeFileSync(tempTsconfigPath, tempTsconfigContent, "utf-8");
 
-    let blocked = false;
-    let blockReason: string | undefined;
+    let lintError: string | undefined;
 
     try {
       const { errors } = await runTsc(tempPath, tempTsconfigPath, ctx.cwd, config.tscTimeoutMs);
 
       if (errors) {
-        blocked = true;
         // Replace temp file paths with the real file path so the agent
         // can directly fix the errors without mapping temp → real.
         const formattedErrors = errors.replaceAll(tempPath, filePath);
-        blockReason = `[pi-ts-prelint] Couldn't ${actionType} ${filePath}: the file was NOT modified. Fix linting errors and try again.\n${formattedErrors}`;
+        lintError = `[pi-ts-prelint] ${actionType.toUpperCase()} applied, but there are compilation errors. Fix them and try again.\n${formattedErrors}`;
       }
     } catch (err: unknown) {
       // Unexpected error (e.g., npx not found) — allow the change as a fail-safe
@@ -394,14 +430,15 @@ export default function (pi: ExtensionAPI) {
       cleanupTempTsconfig(tempTsconfigPath);
     }
 
-    if (blocked) {
-      // Notify about blocking errors (warning level — visible, attention-grabbing)
-      const errorCount = blockReason!.split("\n").filter(l => l.startsWith("error TS")).length || 1;
+    // Store lint errors for injection into tool_result
+    if (lintError) {
+      lintErrorsByToolCallId.set(event.toolCallId, lintError);
+      // Notify user about lint errors (warning level — visible, attention-grabbing)
+      const errorCount = lintError.split("\n").filter(l => l.startsWith("error TS")).length || 1;
       ctx.ui.notify(
-        `❌ ${filePath}: ${errorCount} compilation error(s) — ${actionType.toUpperCase()} blocked, file NOT modified`,
+        `⚠️ ${filePath}: ${errorCount} compilation error(s) — ${actionType.toUpperCase()} applied, file modified`,
         "warning"
       );
-      return { block: true, reason: blockReason! };
     }
   });
 }

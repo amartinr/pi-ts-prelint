@@ -6,7 +6,7 @@
 
 ## What it does
 
-Intercepts `write` and `edit` tool calls on `.ts`/`.tsx` files and runs `tsc --noEmit` before allowing the change to proceed. If compilation fails, the change is blocked with structured error messages.
+Intercepts `write` and `edit` tool calls on `.ts`/`.tsx` files and runs `tsc --noEmit` to check for compilation errors. If compilation fails, the change **is still applied** (so the model sees the modified file), but the structured error messages are injected into the tool result so the model can fix them in the next turn.
 
 This is an experiment. We don't yet know whether it actually helps.
 
@@ -18,8 +18,11 @@ This is a bit hacky — it doesn't lint the whole project, just the single file 
 2. Writes candidate content to a temp file (prefixed with `~`).
 3. Creates a temporary tsconfig that extends the project's `tsconfig.json` but **only includes that single temp file**.
 4. Runs `tsc --noEmit` against the temp file.
-5. Blocks the change if compilation fails, returning structured error messages.
-6. If compilation succeeds, cleans up and lets the change proceed.
+5. If compilation fails, stores the errors and lets the change proceed (the file is modified).
+6. After the tool executes, injects the compilation errors into the tool result so the model sees them.
+7. Cleans up temp files.
+
+This approach ensures the model always sees the modified file state, avoiding the confusion that arises when edits are blocked and the model tries to re-apply changes on stale file content.
 
 Because only one file is checked, cross-file dependency errors are not caught. This is a trade-off for speed.
 
@@ -28,7 +31,8 @@ Because only one file is checked, cross-file dependency errors are not caught. T
 - Only covers `.ts` and `.tsx` files.
 - Requires `npx` and a local `typescript` installation in the project.
 - If `tsc` times out (>30s) or throws unexpectedly, the change is allowed to proceed as a fail-safe.
-- Files exceeding 10 MB are skipped.
+- Files exceeding 10 MB are skipped (linting is bypassed).
+- Compilation errors are not blocking — the model must notice and fix them on its own.
 
 ## Configuration
 
