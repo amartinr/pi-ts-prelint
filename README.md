@@ -17,9 +17,9 @@ The extension intercepts `write` and `edit` tool calls for TypeScript files:
 1. Intercepts `write` and `edit` tool calls for TypeScript files.
 2. Writes the candidate content to a temp file (prefixed with `~`) to calculate the diff with the existing file.
 3. Computes the change complexity (modified lines / total lines) to decide whether linting is worth the cost.
-4. If the change is large enough, runs `tsc --noEmit` on the **real file** (already modified by the original tool) using the project's compiler options from `tsconfig.json` (passed as CLI flags, no temp tsconfig).
+4. If the change is large enough, runs `tsc --noEmit` on the **real file** (already modified by the original tool) using a minimal temp tsconfig that copies compiler options from the project.
 5. If compilation fails, stores the errors and lets the change proceed (the file is modified).
-6. After the tool executes, injects the compilation errors into the tool result so the model sees them.
+6. After the tool executes, injects the compilation errors into the tool result — optionally including a diff of what changed, so the model can correlate errors with specific modifications.
 7. Cleans up the temp file.
 
 The model always sees the modified file state, avoiding the confusion that arises when edits are blocked and the model tries to re-apply changes on stale file content.
@@ -30,7 +30,7 @@ The model always sees the modified file state, avoiding the confusion that arise
 - Requires `npx` and a local `typescript` installation in the project.
 - If `tsc` throws unexpectedly, the change is allowed to proceed as a fail-safe.
 - Compilation errors are not blocking — the model must notice and fix them on its own.
-- Path aliases (`paths` in tsconfig) are not supported (they cannot be passed as `tsc` CLI flags).
+- Only checks the **affected file**, not the entire project — cross-file dependency errors may be missed.
 
 ## Configuration
 
@@ -48,6 +48,10 @@ Configuration is loaded from two sources, merged with project-level taking prior
   "changeComplexity": {
     "minAbsoluteLines": 15,
     "minPercentage": 10
+  },
+  "diffThreshold": {
+    "maxAbsoluteLines": 50,
+    "maxPercentage": 30
   }
 }
 ```
@@ -56,8 +60,10 @@ Configuration is loaded from two sources, merged with project-level taking prior
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `changeComplexity.minAbsoluteLines` | `15` | Lint only when modified lines >= this AND percentage >= minPercentage |
-| `changeComplexity.minPercentage` | `10` | Lint only when modified lines >= minAbsoluteLines AND percentage >= this % |
+| `changeComplexity.minAbsoluteLines` | `15` | Minimum modified lines to trigger linting (AND with percentage) |
+| `changeComplexity.minPercentage` | `10` | Minimum modified % of existing file to trigger linting |
+| `diffThreshold.maxAbsoluteLines` | `50` | Maximum modified lines to include diff in error message |
+| `diffThreshold.maxPercentage` | `30` | Maximum modified % of new file to include diff in error message |
 
 ### Examples
 
@@ -69,6 +75,17 @@ Configuration is loaded from two sources, merged with project-level taking prior
   "changeComplexity": {
     "minAbsoluteLines": 3,
     "minPercentage": 2
+  }
+}
+```
+
+**Disable diff inclusion (only show errors):**
+
+```json
+// .pi/pi-ts-prelint.json
+{
+  "diffThreshold": {
+    "maxAbsoluteLines": 0
   }
 }
 ```

@@ -32,9 +32,9 @@ A minimal pi extension that intercepts `write` and `edit` tool calls for TypeScr
 ## Implementation Notes
 
 - **Temp file for diff only**: The candidate content is written to a temp file in the same directory as the target (e.g. `src/~foo.a1b2c3d.ts`). The `~` prefix and hash infix prevent glob matching and avoid collisions. The temp file is used **only** to calculate the diff with the existing file — it is not passed to `tsc`. The trailing `~` is omitted because `tsc` rejects unsupported extensions (e.g. `.ts~`). The extension must remain exactly `.ts` or `.tsx`.
-- **No temp tsconfig**: Instead of creating a temporary tsconfig with `extends`, the project's `tsconfig.json` is read and its `compilerOptions` are converted to `tsc` CLI flags. This avoids `extends` which would inherit the project's `include` pattern and cause `tsc` to compile transitive imports.
+- **Temp tsconfig for linting**: A minimal temp tsconfig is created that copies `compilerOptions` from the project (excluding `include`, `exclude`, `extends`, `rootDir`) and sets `files` to only the target file. This allows `paths` aliases to resolve correctly. Compiler options that can be passed as CLI flags (`target`, `module`, `strict`, etc.) are passed directly; others (`paths`, `plugins`) are included in the temp tsconfig.
 - **tsc on the real file**: `tsc` is run on the real file (already modified by the original tool). Since the change is non-blocking, the file is always modified regardless of compilation results.
-- **Compiler options as flags**: Options like `target`, `module`, `moduleResolution`, `strict`, `jsx`, `lib`, etc. are passed as CLI flags. Options that cannot be passed as flags (`paths`, `plugins`) are skipped.
+- **Compiler options as flags**: Options like `target`, `module`, `moduleResolution`, `strict`, `jsx`, `lib`, etc. are passed as CLI flags. Options that cannot be passed as flags (`plugins`) are included in the temp tsconfig.
 - **No error filtering needed**: Because `tsc` only receives the single file as argument, every line of `tsc` output is a relevant compilation error — no filtering is required.
 - **Multiple edits**: For `edit` events, all `oldText`/`newText` pairs are applied sequentially using `String.replace()` (each `oldText` is replaced only once).
 - **`oldText` not found**: If `oldText` is missing from the file, the edit is silently skipped (via `continue`) but the lint check still proceeds on the existing content.
@@ -47,7 +47,6 @@ A minimal pi extension that intercepts `write` and `edit` tool calls for TypeScr
 - Only covers TypeScript (`.ts`, `.tsx`).
 - Requires `npx` and a local `typescript` installation in the project.
 - Runs `tsc` only on the **affected file**, not the entire project — this is faster but may miss errors that arise from cross-file dependencies.
-- Path aliases (`paths` in tsconfig) are not supported (they cannot be passed as `tsc` CLI flags).
 - For `edit`: if `oldText` is not found in the file, the edit is silently skipped (via `continue`) but the lint check still proceeds on the existing content.
 - For `edit`: each `oldText` is replaced only once (using `String.replace`), not all occurrences.
 - If `tsc` throws unexpectedly, the change is allowed to proceed as a fail-safe.
