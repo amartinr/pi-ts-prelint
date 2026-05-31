@@ -191,7 +191,7 @@ function tsconfigToTscFlags(compilerOptions: Record<string, unknown>, filePath: 
     sourceMap: "--sourceMap",
     inlineSourceMap: "--inlineSourceMap",
     outDir: "--outDir",
-    rootDir: "--rootDir",
+    // rootDir omitted — causes TS6059 when compiling a single file via absolute path
     baseUrl: "--baseUrl",
     esModuleInterop: "--esModuleInterop",
     allowSyntheticDefaultImports: "--allowSyntheticDefaultImports",
@@ -240,19 +240,75 @@ function readProjectTsconfig(cwd: string): { compilerOptions: Record<string, unk
 }
 
 /**
- * Run `tsc --noEmit` on the real file using compiler options from the project's tsconfig.json.
- * No temporary tsconfig is created — options are passed as CLI flags.
+ * Create a minimal tsconfig.json for linting a single file.
+ * Copies compilerOptions from the project tsconfig but omits `include`
+ * (which would pull in the whole project) and `extends`.
+ * The temp file is placed next to the target so relative paths resolve.
  */
-function runTsc(filePath: string, cwd: string): TscResult {
-  const projectConfig = readProjectTsconfig(cwd);
+function createTempTsconfig(filePath: string, compilerOptions: Record<string, unknown>, id: string): string | null {
+  const dir = path.dirname(filePath);
+  const tsconfigPath = path.join(dir, `~tsconfig.${id}.lint.json`);
 
-  const flags = projectConfig
-    ? tsconfigToTscFlags(projectConfig.compilerOptions, filePath)
-    : ["--noEmit", "--pretty", "false", "--skipLibCheck", filePath];
+  const filtered: Record<string, unknown> = {};
+  for (const key of Object.keys(compilerOptions)) {
+    if (key === "include" || key === "exclude" || key === "extends") continue;
+    filtered[key] = compilerOptions[key];
+  }
+
+  const config = {
+    compilerOptions: filtered,
+    files: [path.basename(filePath)],
+  };
 
   try {
-    execFileSync("npx", ["tsc", ...flags], {
-      cwd,
+    fs.writeFileSync(tsconfigPath, JSON.stringify(config, null, 2), "utf-8");
+    return tsconfigPath;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Run `tsc --noEmit` on the real file using a minimal temp tsconfig
+ * that copies compilerOptions from the project tsconfig but only
+ * includes the target file (no `include`/`exclude`/`extends`).
+ *
+ * Executed from the file's own directory so relative paths resolve.
+ */
+function runTsc(filePath: string, cwd: string, tempId: string): TscResult {
+  const projectConfig = readProjectTsconfig(cwd);
+  // filePath is already absolute (passed from tool_call handler), use as-is
+  const absPath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
+
+  // Run from the file's directory so relative paths and temp tsconfig resolve
+  const fileDir = path.dirname(absPath);
+
+  if (!projectConfig) {
+    // No tsconfig — compile with minimal flags
+    try {
+      execFileSync("npx", ["tsc", "--noEmit", "--pretty", "false", "--skipLibCheck", "--ignoreConfig", absPath], {
+        cwd: fileDir,
+        timeout: 30_000,
+        maxBuffer: 1024 * 1024 * 10,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      return { errors: null };
+    } catch (err: unknown) {
+      const nodeErr = err as { stdout?: Buffer | string; stderr?: Buffer | string };
+      const output =
+        (nodeErr.stdout && typeof nodeErr.stdout.toString === "function" ? nodeErr.stdout.toString() : "") +
+        "\n" +
+        (nodeErr.stderr && typeof nodeErr.stderr.toString === "function" ? nodeErr.stderr.toString() : "");
+      return { errors: output.trim() || null };
+    }
+  }
+
+  // Create a minimal tsconfig that only includes the target file
+  const tempTsconfig = createTempTsconfig(absPath, projectConfig.compilerOptions, tempId);
+
+  try {
+    execFileSync("npx", ["tsc", "--project", tempTsconfig ?? ""], {
+      cwd: fileDir,
       timeout: 30_000,
       maxBuffer: 1024 * 1024 * 10,
       stdio: ["ignore", "pipe", "pipe"],
@@ -265,10 +321,15 @@ function runTsc(filePath: string, cwd: string): TscResult {
       "\n" +
       (nodeErr.stderr && typeof nodeErr.stderr.toString === "function" ? nodeErr.stderr.toString() : "");
 
-    const errors = output.trim();
-    return {
-      errors: errors || null,
-    };
+    return { errors: output.trim() || null };
+  } finally {
+    try {
+      if (tempTsconfig) {
+        fs.rmSync(tempTsconfig, { force: true });
+      }
+    } catch {
+      // Best-effort cleanup
+    }
   }
 }
 
@@ -284,40 +345,96 @@ function cleanupTemp(tempPath: string): void {
 }
 
 /**
+ * Store lint decisions keyed by toolCallId so they can be processed
+ * in the tool_result handler (where the file already exists).
+ */
+interface LintDecision {
+  filePath: string;
+  absPath: string;
+  actionType: string;
+  cwd: string;
+  shouldLint: boolean;
+  tempId: string;
+}
+
+const lintDecisionsByToolCallId = new Map<string, LintDecision>();
+
+/**
  * Store lint errors keyed by toolCallId so they can be injected
  * into the tool_result by the tool_result handler.
  */
 const lintErrorsByToolCallId = new Map<string, string>();
 
 /**
- * Clean up the stored lint errors for a given toolCallId.
+ * Clean up stored data for a given toolCallId.
  */
-function clearLintErrors(toolCallId: string): void {
+function clearLintData(toolCallId: string): void {
+  lintDecisionsByToolCallId.delete(toolCallId);
   lintErrorsByToolCallId.delete(toolCallId);
 }
 
 export default function (pi: ExtensionAPI) {
-  // ─── tool_result: inject lint errors into the model's view ────────────────
+  // ─── tool_result: run tsc (file now exists) and inject lint errors ───────
   // Cast to any to bypass TypeScript overload resolution (tool_result is
   // available in pi >= 0.75 but the overload union can be tricky)
-  ;(pi as any).on("tool_result", (event: { toolName: string; toolCallId: string; input: { path?: string }; content: unknown }) => {
+  ;(pi as any).on("tool_result", async (event: { toolName: string; toolCallId: string; input: { path?: string }; content: unknown }, ctx: ExtensionContext) => {
     const toolCallId = event.toolCallId;
-    const storedErrors = lintErrorsByToolCallId.get(toolCallId);
+    const decision = lintDecisionsByToolCallId.get(toolCallId);
 
-    if (!storedErrors) return;
+    if (!decision) return;
+    lintDecisionsByToolCallId.delete(toolCallId);
 
-    // Only inject for write/edit on .ts/.tsx files
+    // Only process write/edit on .ts/.tsx files
     if (event.toolName !== "write" && event.toolName !== "edit") return;
     const filePath = (event.input as { path?: string })?.path;
     if (!filePath || !isTsFile(filePath)) return;
 
-    // Remove from map to prevent double-injection
-    lintErrorsByToolCallId.delete(toolCallId);
+    // If linting was not needed, just return without modification
+    if (!decision.shouldLint) return;
 
-    // Inject lint errors into the result content
-    const existingContent = typeof event.content === "string" ? event.content : "";
+    // Run tsc on the now-existing file
+    let lintError: string | undefined;
+
+    try {
+      const { errors } = runTsc(decision.absPath, decision.cwd, decision.tempId);
+      if (errors) {
+        lintError = `[pi-ts-prelint] ${decision.actionType.toUpperCase()} applied, but there are compilation errors. Fix them and try again.\n${errors}`;
+      }
+    } catch (err: unknown) {
+      // Unexpected error — allow the change as a fail-safe
+      const message =
+        err instanceof Error
+          ? err.message
+          : typeof err === "string"
+            ? err
+            : "Unknown error";
+      console.warn(`tsc linting failed for ${filePath}: ${message}`);
+    }
+
+    if (!lintError) return;
+
+    // Count compilation errors for the notification
+    const errorCount = lintError.split("\n").filter((l) => l.startsWith("error TS")).length || 1;
+
+    // Notify user about lint errors (warning level — visible, attention-grabbing)
+    ctx.ui.notify(
+      `⚠️ ${filePath}: ${errorCount} compilation error(s) — ${decision.actionType.toUpperCase()} applied, file modified`,
+      "warning"
+    );
+
+    // Store errors for injection
+    lintErrorsByToolCallId.set(toolCallId, lintError);
+
+    // Inject lint errors into the result content.
+    // event.content is (TextContent | ImageContent)[]; build a replacement array.
+    const parts = Array.isArray(event.content)
+      ? event.content.filter((p): p is { type: "text"; text: string } => p.type === "text")
+      : [];
     return {
-      content: `${existingContent}\n\n${storedErrors}`,
+      content: [
+        ...parts,
+        { type: "text" as const, text: lintError },
+      ],
     };
   });
 
@@ -398,54 +515,31 @@ export default function (pi: ExtensionAPI) {
     // Write candidate content to a temp file for diff calculation
     fs.writeFileSync(tempPath, newContent, "utf-8");
 
-    let lintError: string | undefined;
-
+    // Read original content for diff
+    let existingContent: string;
     try {
-      // Read original content for diff
-      let existingContent: string;
-      try {
-        existingContent = fs.readFileSync(absPath, "utf-8");
-      } catch {
-        // File doesn't exist yet — always lint new files
-        existingContent = "";
-      }
-
-      // Only lint changes that are large enough to justify the cost
-      if (shouldLint(existingContent, newContent, config.changeComplexity)) {
-        // Run tsc on the REAL file (already modified by the original tool)
-        // using compiler options from the project's tsconfig.json (no extends)
-        const { errors } = runTsc(absPath, ctx.cwd);
-
-        if (errors) {
-          lintError = `[pi-ts-prelint] ${actionType.toUpperCase()} applied, but there are compilation errors. Fix them and try again.\n${errors}`;
-        }
-      }
-    } catch (err: unknown) {
-      // Unexpected error (e.g., npx not found) — allow the change as a fail-safe
-      const message =
-        err instanceof Error
-          ? err.message
-          : typeof err === "string"
-            ? err
-            : "Unknown error";
-      ctx.ui.notify(
-        `tsc linting skipped for ${filePath}: ${message}. Change allowed.`,
-        "warning"
-      );
-    } finally {
-      // Always clean up the temp file.
-      cleanupTemp(tempPath);
+      existingContent = fs.readFileSync(absPath, "utf-8");
+    } catch {
+      // File doesn't exist yet — always lint new files
+      existingContent = "";
     }
 
-    // Store lint errors for injection into tool_result
-    if (lintError) {
-      lintErrorsByToolCallId.set(event.toolCallId, lintError);
-      // Notify user about lint errors (warning level — visible, attention-grabbing)
-      const errorCount = lintError.split("\n").filter(l => l.startsWith("error TS")).length || 1;
-      ctx.ui.notify(
-        `⚠️ ${filePath}: ${errorCount} compilation error(s) — ${actionType.toUpperCase()} applied, file modified`,
-        "warning"
-      );
+    // Determine if linting is needed
+    const shouldLintChange = shouldLint(existingContent, newContent, config.changeComplexity);
+
+    // Store decision for tool_result handler (where file will exist)
+    if (shouldLintChange) {
+      lintDecisionsByToolCallId.set(event.toolCallId, {
+        filePath,
+        absPath,
+        actionType,
+        cwd: ctx.cwd,
+        shouldLint: true,
+        tempId,
+      });
     }
+
+    // Always clean up the temp file.
+    cleanupTemp(tempPath);
   });
 }
