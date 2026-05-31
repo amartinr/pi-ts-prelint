@@ -251,7 +251,7 @@ function createTempTsconfig(filePath: string, compilerOptions: Record<string, un
 
   const filtered: Record<string, unknown> = {};
   for (const key of Object.keys(compilerOptions)) {
-    if (key === "include" || key === "exclude" || key === "extends") continue;
+    if (key === "include" || key === "exclude" || key === "extends" || key === "rootDir") continue;
     filtered[key] = compilerOptions[key];
   }
 
@@ -414,7 +414,7 @@ export default function (pi: ExtensionAPI) {
     if (!lintError) return;
 
     // Count compilation errors for the notification
-    const errorCount = lintError.split("\n").filter((l) => l.startsWith("error TS")).length || 1;
+    const errorCount = lintError.split("\n").filter((l) => l.includes("error TS")).length || 1;
 
     // Notify user about lint errors (warning level — visible, attention-grabbing)
     ctx.ui.notify(
