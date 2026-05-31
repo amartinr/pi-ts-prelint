@@ -25,12 +25,20 @@ interface PiTsLintConfig {
     minAbsoluteLines: number;
     minPercentage: number;
   };
+  diffThreshold: {
+    maxAbsoluteLines: number;
+    maxPercentage: number;
+  };
 }
 
 const DEFAULT_CONFIG: PiTsLintConfig = {
   changeComplexity: {
     minAbsoluteLines: 15,
     minPercentage: 10,
+  },
+  diffThreshold: {
+    maxAbsoluteLines: 50,
+    maxPercentage: 30,
   },
 };
 
@@ -138,6 +146,62 @@ function countModifiedLines(oldContent: string, newContent: string): number {
     }
   }
   return modified;
+}
+
+/**
+ * Generate a unified diff string between two file contents.
+ * Uses the `diff` library's `diffLines` and formats the output
+ * in a simple, readable format that the model can easily correlate
+ * with compilation error line numbers.
+ */
+function getDiffString(oldContent: string, newContent: string): string {
+  const diffs = diffLines(oldContent, newContent);
+  const lines: string[] = [];
+
+  for (const part of diffs) {
+    if (part.added) {
+      const addedLines = part.value.split("\n");
+      // Remove trailing empty string from split
+      if (addedLines.length > 0 && addedLines[addedLines.length - 1] === "") {
+        addedLines.pop();
+      }
+      for (const line of addedLines) {
+        lines.push(`+ ${line}`);
+      }
+    } else if (part.removed) {
+      const removedLines = part.value.split("\n");
+      if (removedLines.length > 0 && removedLines[removedLines.length - 1] === "") {
+        removedLines.pop();
+      }
+      for (const line of removedLines) {
+        lines.push(`- ${line}`);
+      }
+    }
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Determine whether the diff should be included in the error message.
+ * The diff is included only when the change is small enough to be useful.
+ * A change is considered "small enough" when BOTH conditions are met:
+ *   1. Modified lines <= MAX_ABSOLUTE_LINES
+ *   2. Modified lines / total lines of new file <= MAX_PERCENTAGE
+ *
+ * This ensures the model gets useful context without being overwhelmed
+ * by a diff that's too large to correlate with specific errors.
+ */
+function shouldIncludeDiff(
+  modifiedLines: number,
+  totalLinesNewFile: number,
+  diffThreshold: PiTsLintConfig["diffThreshold"]
+): boolean {
+  if (totalLinesNewFile === 0) return false; // new file — no "diff" to show
+
+  const percentage = (modifiedLines / totalLinesNewFile) * 100;
+
+  return modifiedLines <= diffThreshold.maxAbsoluteLines && percentage <= diffThreshold.maxPercentage;
 }
 
 /**
@@ -355,6 +419,10 @@ interface LintDecision {
   cwd: string;
   shouldLint: boolean;
   tempId: string;
+  diffLines: number;
+  totalLinesNewFile: number;
+  diffText: string;
+  diffThreshold: PiTsLintConfig["diffThreshold"];
 }
 
 const lintDecisionsByToolCallId = new Map<string, LintDecision>();
@@ -398,7 +466,19 @@ export default function (pi: ExtensionAPI) {
     try {
       const { errors } = runTsc(decision.absPath, decision.cwd, decision.tempId);
       if (errors) {
-        lintError = `[pi-ts-prelint] ${decision.actionType.toUpperCase()} applied, but there are compilation errors. Fix them and try again.\n${errors}`;
+        // Determine if diff should be included
+        const includeDiff = shouldIncludeDiff(
+          decision.diffLines,
+          decision.totalLinesNewFile,
+          decision.diffThreshold
+        );
+
+        let diffBlock = "";
+        if (includeDiff && decision.diffText) {
+          diffBlock = `\n--- Diff ---\n${decision.diffText}\n`;
+        }
+
+        lintError = `[pi-ts-prelint] ${decision.actionType.toUpperCase()} applied, but there are compilation errors. Fix them and try again.${diffBlock}${errors}`;
       }
     } catch (err: unknown) {
       // Unexpected error — allow the change as a fail-safe
@@ -526,6 +606,14 @@ export default function (pi: ExtensionAPI) {
 
     // Determine if linting is needed
     const shouldLintChange = shouldLint(existingContent, newContent, config.changeComplexity);
+    const modifiedLines = countModifiedLines(existingContent, newContent);
+    const totalLinesNewFile = newContent.split("\n").length;
+
+    // Generate diff text if linting is needed
+    let diffText = "";
+    if (shouldLintChange) {
+      diffText = getDiffString(existingContent, newContent);
+    }
 
     // Store decision for tool_result handler (where file will exist)
     if (shouldLintChange) {
@@ -536,6 +624,10 @@ export default function (pi: ExtensionAPI) {
         cwd: ctx.cwd,
         shouldLint: true,
         tempId,
+        diffLines: modifiedLines,
+        totalLinesNewFile,
+        diffText,
+        diffThreshold: config.diffThreshold,
       });
     }
 
