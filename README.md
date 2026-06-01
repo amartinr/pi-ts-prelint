@@ -50,8 +50,9 @@ Configuration is loaded from two sources, merged with project-level taking prior
     "minPercentage": 10
   },
   "diffThreshold": {
+    "minErrorsToShow": 3,
     "maxAbsoluteLines": 50,
-    "maxPercentage": 30
+    "maxPercentage": 50
   }
 }
 ```
@@ -62,8 +63,9 @@ Configuration is loaded from two sources, merged with project-level taking prior
 |--------|---------|-------------|
 | `changeComplexity.minAbsoluteLines` | `15` | Minimum modified lines to trigger linting (AND with percentage) |
 | `changeComplexity.minPercentage` | `10` | Minimum modified % of existing file to trigger linting |
+| `diffThreshold.minErrorsToShow` | `3` | Minimum compilation errors to include diff in error message |
 | `diffThreshold.maxAbsoluteLines` | `50` | Maximum modified lines to include diff in error message |
-| `diffThreshold.maxPercentage` | `30` | Maximum modified % of new file to include diff in error message |
+| `diffThreshold.maxPercentage` | `50` | Maximum modified % of new file to include diff in error message |
 
 ### Examples
 
@@ -80,14 +82,14 @@ Configuration is loaded from two sources, merged with project-level taking prior
 }
 ```
 
-**Disable diff inclusion (only show errors):**
+**Show diff only for 2+ errors (lower threshold):**
 
 `.pi/pi-ts-prelint.json`
 
 ```json
 {
   "diffThreshold": {
-    "maxAbsoluteLines": 0
+    "minErrorsToShow": 2
   }
 }
 ```

@@ -26,6 +26,7 @@ interface PiTsLintConfig {
     minPercentage: number;
   };
   diffThreshold: {
+    minErrorsToShow: number;
     maxAbsoluteLines: number;
     maxPercentage: number;
   };
@@ -37,8 +38,9 @@ const DEFAULT_CONFIG: PiTsLintConfig = {
     minPercentage: 10,
   },
   diffThreshold: {
+    minErrorsToShow: 3,
     maxAbsoluteLines: 50,
-    maxPercentage: 30,
+    maxPercentage: 50,
   },
 };
 
@@ -184,19 +186,24 @@ function getDiffString(oldContent: string, newContent: string): string {
 
 /**
  * Determine whether the diff should be included in the error message.
- * The diff is included only when the change is small enough to be useful.
- * A change is considered "small enough" when BOTH conditions are met:
- *   1. Modified lines <= MAX_ABSOLUTE_LINES
- *   2. Modified lines / total lines of new file <= MAX_PERCENTAGE
+ * The diff is included only when the change is large enough to need context
+ * AND small enough to be useful.
+ * All three conditions must be met:
+ *   1. Error count >= MIN_ERRORS_TO_SHOW (need correlation)
+ *   2. Modified lines <= MAX_ABSOLUTE_LINES (diff fits)
+ *   3. Modified lines / total lines of new file <= MAX_PERCENTAGE (diff is readable)
  *
- * This ensures the model gets useful context without being overwhelmed
- * by a diff that's too large to correlate with specific errors.
+ * This ensures the model gets useful context only when it actually needs it,
+ * without wasting tokens on diffs for small changes or overwhelming with
+ * diffs that are too large to correlate.
  */
 function shouldIncludeDiff(
+  errorCount: number,
   modifiedLines: number,
   totalLinesNewFile: number,
   diffThreshold: PiTsLintConfig["diffThreshold"]
 ): boolean {
+  if (errorCount < diffThreshold.minErrorsToShow) return false;
   if (totalLinesNewFile === 0) return false; // new file — no "diff" to show
 
   const percentage = (modifiedLines / totalLinesNewFile) * 100;
@@ -462,12 +469,17 @@ export default function (pi: ExtensionAPI) {
 
     // Run tsc on the now-existing file
     let lintError: string | undefined;
+    let errorCount = 0;
 
     try {
       const { errors } = runTsc(decision.absPath, decision.cwd, decision.tempId);
       if (errors) {
+        // Count compilation errors
+        errorCount = errors.split("\n").filter((l) => l.includes("error TS")).length || 1;
+
         // Determine if diff should be included
         const includeDiff = shouldIncludeDiff(
+          errorCount,
           decision.diffLines,
           decision.totalLinesNewFile,
           decision.diffThreshold
@@ -492,9 +504,6 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (!lintError) return;
-
-    // Count compilation errors for the notification
-    const errorCount = lintError.split("\n").filter((l) => l.includes("error TS")).length || 1;
 
     // Notify user about lint errors (warning level — visible, attention-grabbing)
     ctx.ui.notify(
