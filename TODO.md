@@ -3,7 +3,8 @@
 ## Current Status
 The extension has been refactored to use a simplified flow:
 - Temp file only for diff calculation (not for linting)
-- No temp tsconfig — compiler options passed as CLI flags
+- Temp tsconfig with `files` when project has tsconfig (CLI flags conflict with project tsconfig)
+- Fallback to CLI flags when no tsconfig exists
 - tsc runs on the real file (non-blocking)
 
 ## Next Steps
