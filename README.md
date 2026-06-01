@@ -69,8 +69,9 @@ Configuration is loaded from two sources, merged with project-level taking prior
 
 **Skip linting on smaller edits (project-level):**
 
+`.pi/pi-ts-prelint.json`
+
 ```json
-// .pi/pi-ts-prelint.json
 {
   "changeComplexity": {
     "minAbsoluteLines": 3,
@@ -81,8 +82,9 @@ Configuration is loaded from two sources, merged with project-level taking prior
 
 **Disable diff inclusion (only show errors):**
 
+`.pi/pi-ts-prelint.json`
+
 ```json
-// .pi/pi-ts-prelint.json
 {
   "diffThreshold": {
     "maxAbsoluteLines": 0
@@ -94,8 +96,9 @@ Configuration is loaded from two sources, merged with project-level taking prior
 
 Global config is loaded first, then project config is deep-merged on top. You only need to specify the keys you want to override:
 
+`~/.pi/agent/extensions/pi-ts-prelint/config.json` (global defaults)
+
 ```json
-// ~/.pi/agent/extensions/pi-ts-prelint/config.json (global defaults)
 {
   "changeComplexity": {
     "minAbsoluteLines": 15,
@@ -104,15 +107,17 @@ Global config is loaded first, then project config is deep-merged on top. You on
 }
 ```
 
+`.pi/pi-ts-prelint.json` (project overrides only)
+
 ```json
-// .pi/pi-ts-prelint.json (project overrides only)
 {
   "changeComplexity": {
     "minAbsoluteLines": 3
   }
 }
-// Result: minAbsoluteLines=3, minPercentage=10 (unchanged from global)
 ```
+
+Result: `minAbsoluteLines=3`, `minPercentage=10` (unchanged from global).
 
 ## Installation
 
