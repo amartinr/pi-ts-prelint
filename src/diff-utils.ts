@@ -98,7 +98,7 @@ export function shouldIncludeDiff(
 /**
  * Determine whether linting should be performed based on change complexity.
  * Linting is performed only when the change is large enough to justify the cost.
- * A change is considered "large" only when BOTH conditions are met:
+ * A change is considered "large" when EITHER condition is met:
  *   1. Modified lines >= MIN_ABSOLUTE_LINES
  *   2. Modified lines / total lines >= MIN_PERCENTAGE
  */
@@ -115,7 +115,7 @@ export function shouldLint(
   const percentage = (modifiedLines / totalLines) * 100;
 
   return (
-    modifiedLines >= changeComplexity.minAbsoluteLines &&
+    modifiedLines >= changeComplexity.minAbsoluteLines ||
     percentage >= changeComplexity.minPercentage
   );
 }
