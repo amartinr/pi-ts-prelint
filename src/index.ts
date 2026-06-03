@@ -243,59 +243,6 @@ interface TscResult {
 }
 
 /**
- * Extract compilerOptions from the project's tsconfig.json and convert them
- * to tsc CLI flags. This avoids creating a temporary tsconfig with `extends`.
- *
- * Options that cannot be passed as flags (paths, plugins) are skipped.
- */
-function tsconfigToTscFlags(compilerOptions: Record<string, unknown>, filePath: string): string[] {
-  const flags: string[] = ["--noEmit", "--pretty", "false"];
-
-  const flagMap: Record<string, string> = {
-    target: "--target",
-    module: "--module",
-    moduleResolution: "--moduleResolution",
-    jsx: "--jsx",
-    lib: "--lib",
-    strict: "--strict",
-    declaration: "--declaration",
-    sourceMap: "--sourceMap",
-    inlineSourceMap: "--inlineSourceMap",
-    outDir: "--outDir",
-    // rootDir omitted — causes TS6059 when compiling a single file via absolute path
-    baseUrl: "--baseUrl",
-    esModuleInterop: "--esModuleInterop",
-    allowSyntheticDefaultImports: "--allowSyntheticDefaultImports",
-    resolveJsonModule: "--resolveJsonModule",
-    skipLibCheck: "--skipLibCheck",
-    noEmit: "--noEmit",
-    isolatedModules: "--isolatedModules",
-    verbatimModuleSyntax: "--verbatimModuleSyntax",
-  };
-
-  for (const [key, flag] of Object.entries(flagMap)) {
-    const value = compilerOptions[key];
-    if (value === undefined || value === null) continue;
-
-    if (typeof value === "boolean") {
-      if (value) {
-        flags.push(flag);
-      }
-      // If false, don't pass the flag (tsc default is fine)
-    } else if (typeof value === "string") {
-      flags.push(flag, value);
-    } else if (Array.isArray(value)) {
-      flags.push(flag, value.join(","));
-    }
-  }
-
-  // Add the file path as the last argument
-  flags.push(filePath);
-
-  return flags;
-}
-
-/**
  * Read and parse the project's tsconfig.json, extracting compilerOptions.
  * Returns null if tsconfig.json doesn't exist or can't be parsed.
  */
@@ -434,19 +381,6 @@ interface LintDecision {
 
 const lintDecisionsByToolCallId = new Map<string, LintDecision>();
 
-/**
- * Store lint errors keyed by toolCallId so they can be injected
- * into the tool_result by the tool_result handler.
- */
-const lintErrorsByToolCallId = new Map<string, string>();
-
-/**
- * Clean up stored data for a given toolCallId.
- */
-function clearLintData(toolCallId: string): void {
-  lintDecisionsByToolCallId.delete(toolCallId);
-  lintErrorsByToolCallId.delete(toolCallId);
-}
 
 export default function (pi: ExtensionAPI) {
   // ─── tool_result: run tsc (file now exists) and inject lint errors ───────
@@ -458,11 +392,6 @@ export default function (pi: ExtensionAPI) {
 
     if (!decision) return;
     lintDecisionsByToolCallId.delete(toolCallId);
-
-    // Only process write/edit on .ts/.tsx files
-    if (event.toolName !== "write" && event.toolName !== "edit") return;
-    const filePath = (event.input as { path?: string })?.path;
-    if (!filePath || !isTsFile(filePath)) return;
 
     // If linting was not needed, just return without modification
     if (!decision.shouldLint) return;
@@ -500,19 +429,16 @@ export default function (pi: ExtensionAPI) {
           : typeof err === "string"
             ? err
             : "Unknown error";
-      console.warn(`tsc linting failed for ${filePath}: ${message}`);
+      console.warn(`tsc linting failed for ${decision.filePath}: ${message}`);
     }
 
     if (!lintError) return;
 
     // Notify user about lint errors (warning level — visible, attention-grabbing)
     ctx.ui.notify(
-      `⚠️ ${filePath}: ${errorCount} compilation error(s) — ${decision.actionType.toUpperCase()} applied, file modified`,
+      `⚠️ ${decision.filePath}: ${errorCount} compilation error(s) — ${decision.actionType.toUpperCase()} applied, file modified`,
       "warning"
     );
-
-    // Store errors for injection
-    lintErrorsByToolCallId.set(toolCallId, lintError);
 
     // Inject lint errors into the result content.
     // event.content is (TextContent | ImageContent)[]; build a replacement array.
@@ -604,43 +530,45 @@ export default function (pi: ExtensionAPI) {
     // Write candidate content to a temp file for diff calculation
     fs.writeFileSync(tempPath, newContent, "utf-8");
 
-    // Read original content for diff
-    let existingContent: string;
     try {
-      existingContent = fs.readFileSync(absPath, "utf-8");
-    } catch {
-      // File doesn't exist yet — always lint new files
-      existingContent = "";
+      // Read original content for diff
+      let existingContent: string;
+      try {
+        existingContent = fs.readFileSync(absPath, "utf-8");
+      } catch {
+        // File doesn't exist yet — always lint new files
+        existingContent = "";
+      }
+
+      // Determine if linting is needed
+      const shouldLintChange = shouldLint(existingContent, newContent, config.changeComplexity);
+      const modifiedLines = countModifiedLines(existingContent, newContent);
+      const totalLinesNewFile = newContent.split("\n").length;
+
+      // Generate diff text if linting is needed
+      let diffText = "";
+      if (shouldLintChange) {
+        diffText = getDiffString(existingContent, newContent);
+      }
+
+      // Store decision for tool_result handler (where file will exist)
+      if (shouldLintChange) {
+        lintDecisionsByToolCallId.set(event.toolCallId, {
+          filePath,
+          absPath,
+          actionType,
+          cwd: ctx.cwd,
+          shouldLint: true,
+          tempId,
+          diffLines: modifiedLines,
+          totalLinesNewFile,
+          diffText,
+          diffThreshold: config.diffThreshold,
+        });
+      }
+    } finally {
+      // Always clean up the temp file.
+      cleanupTemp(tempPath);
     }
-
-    // Determine if linting is needed
-    const shouldLintChange = shouldLint(existingContent, newContent, config.changeComplexity);
-    const modifiedLines = countModifiedLines(existingContent, newContent);
-    const totalLinesNewFile = newContent.split("\n").length;
-
-    // Generate diff text if linting is needed
-    let diffText = "";
-    if (shouldLintChange) {
-      diffText = getDiffString(existingContent, newContent);
-    }
-
-    // Store decision for tool_result handler (where file will exist)
-    if (shouldLintChange) {
-      lintDecisionsByToolCallId.set(event.toolCallId, {
-        filePath,
-        absPath,
-        actionType,
-        cwd: ctx.cwd,
-        shouldLint: true,
-        tempId,
-        diffLines: modifiedLines,
-        totalLinesNewFile,
-        diffText,
-        diffThreshold: config.diffThreshold,
-      });
-    }
-
-    // Always clean up the temp file.
-    cleanupTemp(tempPath);
   });
 }
