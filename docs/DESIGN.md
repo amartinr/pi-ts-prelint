@@ -33,14 +33,14 @@ A minimal pi extension that intercepts `write` and `edit` tool calls for TypeScr
 
 - **Temp file for diff only**: The candidate content is written to a temp file in the same directory as the target (e.g. `src/~foo.a1b2c3d.ts`). The `~` prefix and hash infix prevent glob matching and avoid collisions. The temp file is used **only** to calculate the diff with the existing file — it is not passed to `tsc`. The trailing `~` is omitted because `tsc` rejects unsupported extensions (e.g. `.ts~`). The extension must remain exactly `.ts` or `.tsx`.
 - **Why a temp tsconfig is necessary**: When a project has a `tsconfig.json`, `tsc` always reads it regardless of CLI flags. Passing compiler options as flags (e.g. `--target`, `--module`) conflicts with the values in the project tsconfig, producing unpredictable behavior or errors. The solution is to create a minimal temp tsconfig that copies `compilerOptions` from the project, excludes `include`/`exclude`/`extends`/`rootDir`, and sets `files` to only the target file. This isolates the compilation to a single file while preserving all compiler settings (including `paths` aliases and `plugins` that have no CLI equivalent).
-- **Fallback without tsconfig**: If the project has no `tsconfig.json`, `tsc` is run with minimal CLI flags (`--noEmit --pretty false --skipLibCheck`) directly on the file.
+- **Fallback without tsconfig**: If the project has no `tsconfig.json`, `tsc` is run with minimal CLI flags (`--noEmit --pretty false --skipLibCheck --ignoreConfig`) directly on the file. The `--ignoreConfig` flag prevents `tsc` from picking up a `tsconfig.json` in a parent directory when the `cwd` is the file's own directory rather than the project root.
 - **tsc on the real file**: `tsc` is run on the real file (already modified by the original tool). Since the change is non-blocking, the file is always modified regardless of compilation results.
 - **No error filtering needed**: Because `tsc` only receives the single file as argument (via `files` in the temp tsconfig), every line of `tsc` output is a relevant compilation error — no filtering is required.
 - **Multiple edits**: For `edit` events, all `oldText`/`newText` pairs are applied sequentially using `String.replace()` (each `oldText` is replaced only once). The `newText` value of `undefined` is treated as an empty string (deletion).
 - **`oldText` not found**: If `oldText` is missing from the file, the edit is silently skipped but the lint check still proceeds on the existing content.
 - **Single-edit format**: In addition to the array format `{ edits: [...] }`, the extension also supports a single-edit format `{ oldText, newText }` as direct properties of `event.input`.
 - **UI notifications**: A warning notification is shown when compilation errors are detected (`⚠️ ${filePath}: ${errorCount} compilation error(s) — ${action} applied, file modified`).
-- **Cleanup of temp file**: Only one temp file is cleaned up in a `finally` block.
+- **Cleanup of temp files**: The diff temp file (`~filename.hash.ext`) is cleaned up at the end of the `tool_call` handler. The temp tsconfig (`~tsconfig.hash.lint.json`) is cleaned up in a `finally` block inside `runTsc`. If the process is killed between creation and cleanup, either file may be left behind.
 - **Hash generation**: Temp file IDs are generated using `crypto.createHash("sha256")` with the basename + ISO date, styled like a short git commit hash (7 chars).
 
 ## Limitations
@@ -50,4 +50,4 @@ A minimal pi extension that intercepts `write` and `edit` tool calls for TypeScr
 - For `edit`: if `oldText` is not found in the file, the edit is silently skipped (via `continue`) but the lint check still proceeds on the existing content.
 - For `edit`: each `oldText` is replaced only once (using `String.replace`), not all occurrences.
 - If `tsc` throws unexpectedly, the change is allowed to proceed as a fail-safe.
-- The extension creates one temp file: `~filename.hash.ext` in the same directory — if the process is killed mid-way, it may be left behind.
+- The extension creates two temp files in the same directory as the target: a diff temp file (`~filename.hash.ext`) and a temp tsconfig (`~tsconfig.hash.lint.json`). If the process is killed mid-way, either may be left behind.

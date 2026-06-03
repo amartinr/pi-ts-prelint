@@ -1,6 +1,6 @@
 {
   "name": "@amartinr/pi-ts-prelint",
-  "version": "0.0.1-alpha.8",
+  "version": "0.0.1-beta.1",
   "description": "Pre-write TypeScript linting for pi — non-blocking tsc check on .ts/.tsx files with error injection",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
